@@ -9,6 +9,13 @@
 
 static void* libraryHandle = NULL;
 
+#ifdef DARLING
+// OSXER LLVMPIPE (private LLVM): DynamicFunction caches native addresses for
+// the process lifetime. Retain the isolated runtime across finit/init as well;
+// reopening NODELETE LLVM in new namespaces would exhaust glibc's namespaces.
+static void* privateLibraryHandle = NULL;
+#endif
+
 #define DYNAMICLLVM_FUNCTION_DEF(_name) \
 	Iridium::DynamicLLVM::DynamicFunction<decltype(_name)> Iridium::DynamicLLVM::_name(#_name);
 
@@ -16,7 +23,13 @@ IRIDIUM_DYNAMICLLVM_FUNCTION_FOREACH(DYNAMICLLVM_FUNCTION_DEF)
 
 bool Iridium::DynamicLLVM::init() {
 #ifdef DARLING
-	libraryHandle = _elfcalls->dlopen(HOST_LLVM_LIBNAME);
+	// OSXER LLVMPIPE (private LLVM): Mesa may use another LLVM major. GNU
+	// unique C++ data ignores symbol versions and RTLD_LOCAL, so its LLVM
+	// must not share a namespace with Iridium's. Objects stay behind LLVM's
+	// C API, including its allocation/disposal pairs.
+	if (!privateLibraryHandle)
+		privateLibraryHandle = _elfcalls->dlopen_private(HOST_LLVM_LIBNAME);
+	libraryHandle = privateLibraryHandle;
 #else
 	libraryHandle = dlopen(HOST_LLVM_LIBNAME, RTLD_LAZY);
 #endif
@@ -45,7 +58,8 @@ bool Iridium::DynamicLLVM::init() {
 void Iridium::DynamicLLVM::finit() {
 	if (libraryHandle) {
 #ifdef DARLING
-		_elfcalls->dlclose(libraryHandle);
+		// OSXER LLVMPIPE (private LLVM): cached function pointers still refer
+		// to this runtime; privateLibraryHandle retains the owning reference.
 #else
 		dlclose(libraryHandle);
 #endif
